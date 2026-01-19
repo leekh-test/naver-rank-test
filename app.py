@@ -4,6 +4,8 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time
 import pandas as pd
 from datetime import datetime
@@ -32,17 +34,13 @@ if st.button("🚀 순위 확인 시작하기"):
         
         st.info(f"검색을 시작합니다... (화면은 뜨지 않고 뒤에서 작동합니다)")
         
-        # 진행률 표시 바
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
         result_data = []
         
-        # ==========================================
-        # ★ 브라우저 옵션 설정 (공통)
-        # ==========================================
+        # 브라우저 옵션
         options = webdriver.ChromeOptions()
-        options.add_argument("--headless")  # 화면 안 보이게
+        options.add_argument("--headless")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--no-sandbox")
@@ -52,44 +50,59 @@ if st.button("🚀 순위 확인 시작하기"):
         driver = None
         
         try:
-            # ----------------------------------------------
-            # ★ 핵심: 내 컴퓨터 vs 서버 컴퓨터 구분해서 실행
-            # ----------------------------------------------
+            # 드라이버 설정 (로컬 vs 서버 자동 감지)
             try:
-                # 1. 내 컴퓨터(윈도우/맥)에서 실행할 때
                 service = Service(ChromeDriverManager().install())
                 driver = webdriver.Chrome(service=service, options=options)
             except:
-                # 2. 서버(Streamlit Cloud/리눅스)에서 실행할 때
-                # 서버에는 크롬이 /usr/bin/chromium에 설치됩니다.
                 options.binary_location = "/usr/bin/chromium"
                 service = Service("/usr/bin/chromedriver")
                 driver = webdriver.Chrome(service=service, options=options)
-            # ----------------------------------------------
             
+            # 대기 시간을 위한 도구 준비 (최대 15초 기다림)
+            wait = WebDriverWait(driver, 15)
+
             for idx, keyword in enumerate(keywords):
                 status_text.markdown(f"### 🔍 현재 검색 중: **[{keyword}]**")
                 progress_bar.progress((idx) / len(keywords))
 
                 driver.get("https://map.naver.com/v5/search")
-                time.sleep(2)
+                
+                # ★ 1. 검색창이 뜰 때까지 스마트하게 기다림
+                try:
+                    search_box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input.input_search")))
+                    time.sleep(1) # 입력 전 잠깐 대기
+                    search_box.clear()
+                    search_box.send_keys(keyword)
+                    search_box.send_keys(Keys.ENTER)
+                except Exception as e:
+                    st.error(f"검색창을 찾을 수 없습니다. 네이버가 접속을 차단했을 수 있습니다.")
+                    st.image(driver.get_screenshot_as_png(), caption='현재 화면 캡처')
+                    raise e
 
-                search_box = driver.find_element(By.CSS_SELECTOR, "input.input_search")
-                search_box.clear()
-                search_box.send_keys(keyword)
-                search_box.send_keys(Keys.ENTER)
-                time.sleep(2)
-
-                driver.switch_to.frame("searchIframe")
+                # ★ 2. iframe(결과창)이 생길 때까지 스마트하게 기다림 + 입장
+                try:
+                    wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "searchIframe")))
+                except Exception as e:
+                    st.warning(f"검색 결과 상자(searchIframe) 진입 실패. 스크린샷을 확인하세요.")
+                    # iframe 진입 실패 시, 메인 화면을 찍어서 보여줌
+                    st.image(driver.get_screenshot_as_png(), caption='에러 발생 시 화면')
+                    raise e
 
                 # 스크롤 내리기
                 while True:
                     stores = driver.find_elements(By.CSS_SELECTOR, ".place_bluelink")
                     if len(stores) >= max_rank:
                         break
-                    last_store = stores[-1]
-                    driver.execute_script("arguments[0].scrollIntoView(true);", last_store)
-                    time.sleep(1.5)
+                    
+                    if len(stores) > 0:
+                        last_store = stores[-1]
+                        driver.execute_script("arguments[0].scrollIntoView(true);", last_store)
+                        time.sleep(1.5)
+                    else:
+                        # 가게가 하나도 안 보이면 로딩 대기
+                        time.sleep(2)
+                        
                     if len(driver.find_elements(By.CSS_SELECTOR, ".place_bluelink")) == len(stores):
                         break
                 
@@ -131,6 +144,8 @@ if st.button("🚀 순위 확인 시작하기"):
             )
 
         except Exception as e:
-            st.error(f"에러가 발생했습니다: {e}")
+            st.error(f"오류가 발생했습니다: {e}")
+            # ★ 에러가 나면 현재 화면을 사진 찍어서 보여줌 (디버깅용)
             if driver:
+                st.image(driver.get_screenshot_as_png(), caption='오류 발생 직전 화면')
                 driver.quit()
